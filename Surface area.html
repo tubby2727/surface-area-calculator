@@ -1,0 +1,604 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>External Steel Surface Area Calculator</title>
+  <style>
+    body { font-family: system-ui, Arial, sans-serif; margin: 24px; max-width: 1100px; }
+    h1 { margin: 0 0 8px; }
+    .muted { color: #555; font-size: 14px; line-height: 1.35; }
+    .card { border: 1px solid #ddd; border-radius: 14px; padding: 16px; margin-top: 14px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    label { display: block; font-weight: 650; margin-bottom: 6px; }
+    input, select { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 10px; font-size: 16px; }
+    .row { margin-top: 12px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    button { padding: 10px 14px; border: 1px solid #111; background: #111; color: #fff; border-radius: 10px; cursor: pointer; }
+    button.secondary { background: #fff; color: #111; }
+    button.danger { background: #fff; color: #b00020; border-color: #b00020; }
+    .out { margin-top: 14px; padding: 12px; background: #f7f7f7; border-radius: 10px; }
+    .big { font-size: 22px; font-weight: 850; margin: 4px 0; }
+    .hint { font-size: 13px; color: #666; margin-top: 6px; }
+    .hidden { display: none; }
+
+    /* Error highlighting */
+    input.error, select.error { border: 2px solid #d93025; background: #fff1f1; }
+    .error-text { color: #d93025; font-size: 13px; margin-top: 4px; }
+
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+    th, td { border-bottom: 1px solid #eee; padding: 10px 8px; text-align: left; vertical-align: top; }
+    th { font-size: 13px; color: #444; }
+    .totals { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 10px; }
+    .pill { background:#f3f3f3; border-radius: 999px; padding: 8px 12px; font-weight: 700; }
+    .right { text-align: right; }
+    .small { font-size: 13px; color: #555; }
+
+    .qtyCell input { width: 84px; padding: 8px 10px; font-size: 15px; text-align: right; }
+  </style>
+</head>
+<body>
+<h1>External Steel Surface Area Calculator</h1>
+<div class="muted">
+  Units: dimensions in <b>mm</b>, length in <b>m</b> (Plate uses mm only). Outputs in <b>m²</b>.<br>
+  External surface only (good for powder coating). Plate is treated as <b>2 faces only</b>.
+</div>
+
+<div class="card">
+  <div class="grid">
+    <div>
+      <label for="shape">Shape</label>
+      <select id="shape" onchange="updateUI()">
+        <option value="plate">Plate (flat sheet)</option>
+        <option value="rhs">RHS</option>
+        <option value="shs">SHS</option>
+        <option value="pipe">Pipe</option>
+        <option value="angle">Angle</option>
+        <option value="ub">UB (Universal Beam)</option>
+        <option value="uc">UC (Universal Column)</option>
+      </select>
+    </div>
+
+    <div>
+      <label for="qty">Quantity</label>
+      <input id="qty" type="number" inputmode="numeric" min="1" step="1" value="1" />
+    </div>
+
+    <!-- UB/UC size dropdown (only shown for UB/UC) -->
+    <div id="section_field" class="hidden" style="grid-column: 1 / span 2;">
+      <label id="section_label" for="section_select">Section size</label>
+      <select id="section_select"></select>
+      <div class="hint" id="section_hint"></div>
+    </div>
+
+    <div id="a_field">
+      <label id="labelA" for="a_mm">Height (mm)</label>
+      <input id="a_mm" type="number" inputmode="decimal" min="0" step="0.1" />
+    </div>
+
+    <div id="b_field">
+      <label id="labelB" for="b_mm">Width (mm)</label>
+      <input id="b_mm" type="number" inputmode="decimal" min="0" step="0.1" />
+    </div>
+
+    <!-- Length underneath -->
+    <div id="length_field" style="grid-column: 1 / span 2;">
+      <label id="labelL" for="length_m">Length (m)</label>
+      <input id="length_m" type="number" inputmode="decimal" min="0" step="0.001" />
+    </div>
+  </div>
+
+  <div class="row">
+    <button id="btnCalc" onclick="calcAndAdd()">Calculate</button>
+    <button class="secondary" onclick="resetInputs()">Clear Inputs</button>
+    <button class="danger" onclick="clearList()">Clear List</button>
+  </div>
+
+  <div class="out" id="out">
+    <div class="muted">Enter values and press Enter (adds to list).</div>
+  </div>
+
+  <div class="hint" id="formulaHint"></div>
+</div>
+
+<div class="card">
+  <h3 style="margin:0 0 8px;">Items</h3>
+  <div class="muted">Saved in this browser. Edit Qty inline. Delete rows as needed.</div>
+
+  <div class="totals" id="totals"></div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Shape</th>
+        <th>Size</th>
+        <th class="right">Length</th>
+        <th class="right">Qty</th>
+        <th class="right">Area / item (m²)</th>
+        <th class="right">Line total (m²)</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody id="tbody"></tbody>
+  </table>
+</div>
+
+<script>
+  const $ = id => document.getElementById(id);
+
+  // --- AU UB/UC library (designation, depth d, flange width bf, web thickness tw, mass) ---
+  // Source: AU sizing chart PDF (see citations in chat). Values in mm (mass in kg/m).
+  const UB_SECTIONS = [
+    {des:"150UB14.0", d:150, bf:75,  tw:5.0,  mass:14.0},
+    {des:"150UB18.0", d:155, bf:75,  tw:6.0,  mass:18.0},
+    {des:"180UB16.1", d:173, bf:90,  tw:4.5,  mass:16.1},
+    {des:"180UB18.1", d:175, bf:90,  tw:5.0,  mass:18.1},
+    {des:"180UB22.2", d:179, bf:90,  tw:6.0,  mass:22.2},
+    {des:"200UB18.2", d:198, bf:99,  tw:4.5,  mass:18.2},
+    {des:"200UB22.2", d:202, bf:133, tw:5.0,  mass:22.2},
+    {des:"200UB25.4", d:203, bf:133, tw:5.8,  mass:25.4},
+    {des:"200UB29.8", d:207, bf:134, tw:6.3,  mass:29.8},
+    {des:"250UB25.7", d:248, bf:124, tw:5.0,  mass:25.7},
+    {des:"250UB31.4", d:252, bf:146, tw:6.1,  mass:31.4},
+    {des:"250UB37.3", d:256, bf:146, tw:6.4,  mass:37.3},
+    {des:"310UB32.0", d:298, bf:149, tw:5.5,  mass:32.0},
+    {des:"310UB40.4", d:304, bf:165, tw:6.1,  mass:40.4},
+    {des:"310UB46.2", d:307, bf:166, tw:6.7,  mass:46.2},
+    {des:"360UB44.7", d:352, bf:171, tw:6.9,  mass:44.7},
+    {des:"360UB50.7", d:356, bf:171, tw:7.3,  mass:50.7},
+    {des:"360UB56.7", d:359, bf:172, tw:8.0,  mass:56.7},
+    {des:"410UB53.7", d:403, bf:178, tw:7.6,  mass:53.7},
+    {des:"410UB59.7", d:406, bf:178, tw:7.8,  mass:59.7},
+    {des:"460UB67.1", d:454, bf:190, tw:8.5,  mass:67.1},
+    {des:"460UB74.6", d:457, bf:190, tw:9.1,  mass:74.6},
+    {des:"460UB82.1", d:460, bf:191, tw:9.9,  mass:82.1},
+    {des:"530UB82.0", d:528, bf:209, tw:9.6,  mass:82.0},
+    {des:"530UB92.4", d:533, bf:209, tw:10.2, mass:92.4},
+    {des:"610UB101.0",d:602, bf:228, tw:10.6, mass:101.0},
+    {des:"610UB113.0",d:607, bf:228, tw:11.2, mass:113.0},
+    {des:"610UB125.0",d:612, bf:229, tw:11.9, mass:125.0},
+  ];
+
+  const UC_SECTIONS = [
+    {des:"100UC14.8", d:97,  bf:99,  tw:5.0,  mass:14.8},
+    {des:"150UC23.4", d:152, bf:152, tw:6.1,  mass:23.4},
+    {des:"150UC30.0", d:158, bf:153, tw:6.6,  mass:30.0},
+    {des:"150UC37.2", d:162, bf:154, tw:8.1,  mass:37.2},
+    {des:"200UC46.2", d:203, bf:203, tw:7.3,  mass:46.2},
+    {des:"200UC52.2", d:206, bf:204, tw:8.0,  mass:52.2},
+    {des:"200UC59.5", d:210, bf:205, tw:9.3,  mass:59.5},
+    {des:"250UC72.9", d:254, bf:254, tw:8.6,  mass:72.9},
+    {des:"250UC89.5", d:260, bf:256, tw:10.5, mass:89.5},
+    {des:"310UC96.8", d:308, bf:305, tw:9.9,  mass:96.8},
+    {des:"310UC118.0",d:315, bf:307, tw:11.9, mass:118.0},
+    {des:"310UC137.0",d:321, bf:309, tw:13.8, mass:137.0},
+    {des:"310UC158.0",d:327, bf:311, tw:15.7, mass:158.0},
+  ];
+
+  // ---------- Error helpers ----------
+  function clearErrors() {
+    document.querySelectorAll(".error").forEach(e => e.classList.remove("error"));
+    document.querySelectorAll(".error-text").forEach(e => e.remove());
+  }
+  function markError(el, msg) {
+    el.classList.add("error");
+    const d = document.createElement("div");
+    d.className = "error-text";
+    d.textContent = msg;
+    el.parentElement.appendChild(d);
+  }
+  function attachAutoClear(el){
+    ["input","change"].forEach(evt => {
+      el.addEventListener(evt, () => {
+        el.classList.remove("error");
+        const err = el.parentElement.querySelector(".error-text");
+        if (err) err.remove();
+      });
+    });
+  }
+
+  // ---------- List storage ----------
+  const STORAGE_KEY = "steel_area_items_v4";
+  let items = [];
+
+  function loadItems(){
+    try {
+      items = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+      if (!Array.isArray(items)) items = [];
+    } catch {
+      items = [];
+    }
+    items = items.map(it => ({
+      ...it,
+      qty: Number.isFinite(it.qty) ? it.qty : 1,
+      lineTotal: (it.areaPerItem || 0) * (it.qty || 1)
+    }));
+    renderListFull();
+  }
+  function saveItems(){
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
+  }
+
+  // ---------- UI setup ----------
+  function populateSectionDropdown(shape){
+    const sel = $("section_select");
+    sel.innerHTML = "";
+    const list = (shape === "ub") ? UB_SECTIONS : UC_SECTIONS;
+
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Select a section…";
+    sel.appendChild(placeholder);
+
+    for (const s of list){
+      const opt = document.createElement("option");
+      opt.value = s.des;
+      opt.textContent = `${s.des}  (d ${s.d} × bf ${s.bf}, tw ${s.tw})`;
+      sel.appendChild(opt);
+    }
+  }
+
+  function getSelectedSection(shape){
+    const des = $("section_select").value;
+    if (!des) return null;
+    const list = (shape === "ub") ? UB_SECTIONS : UC_SECTIONS;
+    return list.find(x => x.des === des) || null;
+  }
+
+  function updateUI(){
+    clearErrors();
+    const s = $("shape").value;
+
+    // default visibility
+    $("section_field").classList.add("hidden");
+    $("a_field").classList.remove("hidden");
+    $("b_field").classList.remove("hidden");
+    $("length_field").classList.remove("hidden");
+    $("b_mm").disabled = false;
+
+    if (s === "plate"){
+      $("labelA").textContent = "Length (mm)";
+      $("labelB").textContent = "Width (mm)";
+      $("length_field").classList.add("hidden");
+      $("formulaHint").innerHTML = "Plate (2 faces): <b>Area = 2 × (Length × Width)</b>";
+      return;
+    }
+
+    if (s === "rhs"){
+      $("labelA").textContent = "Height (mm)";
+      $("labelB").textContent = "Width (mm)";
+      $("formulaHint").innerHTML = "RHS external: <b>Area = 2(H + W) × L</b>";
+      return;
+    }
+
+    if (s === "shs"){
+      $("labelA").textContent = "Side (mm)";
+      $("labelB").textContent = "Side (mm) (auto)";
+      $("b_mm").value = $("a_mm").value;
+      $("b_mm").disabled = true;
+      $("formulaHint").innerHTML = "SHS external: <b>Area = 4S × L</b>";
+      return;
+    }
+
+    if (s === "pipe"){
+      $("labelA").textContent = "Outside Diameter (mm)";
+      $("b_field").classList.add("hidden");
+      $("formulaHint").innerHTML = "Pipe external: <b>Area = π × OD × L</b>";
+      return;
+    }
+
+    if (s === "angle"){
+      $("labelA").textContent = "Leg A (mm)";
+      $("labelB").textContent = "Leg B (mm)";
+      $("formulaHint").innerHTML = "Angle external (approx): <b>Area ≈ 2(A + B) × L</b>";
+      return;
+    }
+
+    if (s === "ub" || s === "uc"){
+      $("section_field").classList.remove("hidden");
+      $("a_field").classList.add("hidden");
+      $("b_field").classList.add("hidden");
+
+      $("section_label").textContent = (s === "ub") ? "UB size" : "UC size";
+      populateSectionDropdown(s);
+      $("section_hint").textContent = "Select a section; then enter Length (m).";
+      $("formulaHint").innerHTML =
+        (s === "ub")
+          ? "UB external: <b>Area = L × (4bf + 2d − 2tw) / 1000</b>"
+          : "UC external: <b>Area = L × (4bf + 2d − 2tw) / 1000</b>";
+      return;
+    }
+  }
+
+  // Keep SHS synced
+  $("a_mm").addEventListener("input", () => {
+    if ($("shape").value === "shs") $("b_mm").value = $("a_mm").value;
+  });
+
+  // Auto-clear errors
+  ["shape","qty","a_mm","b_mm","length_m","section_select"].forEach(id => {
+    const el = $(id);
+    if (el) attachAutoClear(el);
+  });
+
+  // Enter key: calculate + add to list
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      const active = document.activeElement;
+      if (active && (active.tagName === "INPUT" || active.tagName === "SELECT")) {
+        e.preventDefault();
+        calcAndAdd();
+      }
+    }
+  });
+
+  function fmt(x){
+    if (!isFinite(x)) return "—";
+    if (x >= 10) return x.toFixed(2);
+    if (x >= 1) return x.toFixed(3);
+    return x.toFixed(4);
+  }
+
+  function shapeName(s){
+    return ({
+      plate:"Plate", rhs:"RHS", shs:"SHS", pipe:"Pipe", angle:"Angle",
+      ub:"UB", uc:"UC"
+    })[s] || s;
+  }
+
+  function recalcRow(it){ it.lineTotal = it.areaPerItem * it.qty; }
+
+  function calcAndAdd(){
+    clearErrors();
+    const s = $("shape").value;
+    const qty = Number($("qty").value);
+
+    if (!(Number.isFinite(qty) && qty >= 1 && Number.isInteger(qty))) {
+      markError($("qty"), "Qty must be a whole number ≥ 1");
+      return;
+    }
+
+    let areaPerItem = NaN;
+    let sizeText = "";
+    let lengthText = "";
+
+    if (s === "plate"){
+      const Lmm = Number($("a_mm").value);
+      const Wmm = Number($("b_mm").value);
+      let hasError = false;
+      if (!(Number.isFinite(Lmm) && Lmm > 0)) { markError($("a_mm"), "Length required (mm)"); hasError = true; }
+      if (!(Number.isFinite(Wmm) && Wmm > 0)) { markError($("b_mm"), "Width required (mm)"); hasError = true; }
+      if (hasError) return;
+
+      const L = Lmm / 1000;
+      const W = Wmm / 1000;
+      areaPerItem = 2 * (L * W);
+
+      sizeText = `${Lmm}×${Wmm}`;
+      lengthText = "—";
+    }
+
+    if (s === "rhs"){
+      const Hmm = Number($("a_mm").value);
+      const Wmm = Number($("b_mm").value);
+      const Lm  = Number($("length_m").value);
+      let hasError = false;
+      if (!(Number.isFinite(Hmm) && Hmm > 0)) { markError($("a_mm"), "Height required (mm)"); hasError = true; }
+      if (!(Number.isFinite(Wmm) && Wmm > 0)) { markError($("b_mm"), "Width required (mm)"); hasError = true; }
+      if (!(Number.isFinite(Lm) && Lm > 0))  { markError($("length_m"), "Length required (m)"); hasError = true; }
+      if (hasError) return;
+
+      const H = Hmm/1000, W = Wmm/1000;
+      areaPerItem = (2*(H + W)) * Lm;
+
+      sizeText = `${Hmm}×${Wmm}`;
+      lengthText = `${Lm} m`;
+    }
+
+    if (s === "shs"){
+      const Smm = Number($("a_mm").value);
+      const Lm  = Number($("length_m").value);
+      let hasError = false;
+      if (!(Number.isFinite(Smm) && Smm > 0)) { markError($("a_mm"), "Side required (mm)"); hasError = true; }
+      if (!(Number.isFinite(Lm) && Lm > 0))  { markError($("length_m"), "Length required (m)"); hasError = true; }
+      if (hasError) return;
+
+      const S = Smm/1000;
+      areaPerItem = (4*S) * Lm;
+
+      sizeText = `${Smm}`;
+      lengthText = `${Lm} m`;
+    }
+
+    if (s === "pipe"){
+      const ODmm = Number($("a_mm").value);
+      const Lm   = Number($("length_m").value);
+      let hasError = false;
+      if (!(Number.isFinite(ODmm) && ODmm > 0)) { markError($("a_mm"), "OD required (mm)"); hasError = true; }
+      if (!(Number.isFinite(Lm) && Lm > 0))     { markError($("length_m"), "Length required (m)"); hasError = true; }
+      if (hasError) return;
+
+      const OD = ODmm/1000;
+      areaPerItem = (Math.PI * OD) * Lm;
+
+      sizeText = `OD ${ODmm}`;
+      lengthText = `${Lm} m`;
+    }
+
+    if (s === "angle"){
+      const Amm = Number($("a_mm").value);
+      const Bmm = Number($("b_mm").value);
+      const Lm  = Number($("length_m").value);
+      let hasError = false;
+      if (!(Number.isFinite(Amm) && Amm > 0)) { markError($("a_mm"), "Leg A required (mm)"); hasError = true; }
+      if (!(Number.isFinite(Bmm) && Bmm > 0)) { markError($("b_mm"), "Leg B required (mm)"); hasError = true; }
+      if (!(Number.isFinite(Lm) && Lm > 0))  { markError($("length_m"), "Length required (m)"); hasError = true; }
+      if (hasError) return;
+
+      const A = Amm/1000, B = Bmm/1000;
+      areaPerItem = (2*(A + B)) * Lm;
+
+      sizeText = `${Amm}×${Bmm}`;
+      lengthText = `${Lm} m`;
+    }
+
+    if (s === "ub" || s === "uc"){
+      const sec = getSelectedSection(s);
+      const Lm  = Number($("length_m").value);
+      let hasError = false;
+      if (!sec) { markError($("section_select"), "Select a section"); hasError = true; }
+      if (!(Number.isFinite(Lm) && Lm > 0)) { markError($("length_m"), "Length required (m)"); hasError = true; }
+      if (hasError) return;
+
+      // External coating model (no ends): L * (4bf + 2d - 2tw)/1000
+      areaPerItem = Lm * ( (4*sec.bf + 2*sec.d - 2*sec.tw) / 1000 );
+
+      sizeText = `${sec.des}  (d ${sec.d}× bf ${sec.bf}, tw ${sec.tw})`;
+      lengthText = `${Lm} m`;
+    }
+
+    const it = {
+      id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random()),
+      shape: s,
+      sizeText,
+      lengthText,
+      qty,
+      areaPerItem,
+      lineTotal: areaPerItem * qty
+    };
+
+    $("out").innerHTML = `
+      <div class="muted">Calculated & added to list</div>
+      <div class="big">${fmt(it.areaPerItem)} m² <span class="small">per item</span></div>
+      <div class="muted">Qty: <b>${it.qty}</b> → Line total: <b>${fmt(it.lineTotal)} m²</b></div>
+    `;
+
+    items.push(it);
+    saveItems();
+    appendRow(it);
+    renderTotalsOnly();
+  }
+
+  // ---------- Smooth list rendering ----------
+  function renderListFull(){
+    $("tbody").innerHTML = "";
+    for (const it of items) appendRow(it);
+    refreshRowNumbers();
+    renderTotalsOnly();
+  }
+
+  function appendRow(it){
+    const tbody = $("tbody");
+
+    const tr = document.createElement("tr");
+    tr.dataset.id = it.id;
+
+    tr.innerHTML = `
+      <td class="rowIndex"></td>
+      <td>${shapeName(it.shape)}</td>
+      <td>${it.sizeText}</td>
+      <td class="right">${it.lengthText || "—"}</td>
+      <td class="right qtyCell">
+        <input type="number" min="1" step="1" value="${it.qty}" aria-label="Quantity" />
+      </td>
+      <td class="right">${fmt(it.areaPerItem)}</td>
+      <td class="right lineTotal"><b>${fmt(it.lineTotal)}</b></td>
+      <td class="right"><button class="danger">Delete</button></td>
+    `;
+
+    tr.querySelector("button.danger").addEventListener("click", () => deleteItem(it.id));
+
+    const qtyInput = tr.querySelector(".qtyCell input");
+    qtyInput.addEventListener("change", () => handleQtyChange(it.id, qtyInput));
+    qtyInput.addEventListener("blur", () => handleQtyChange(it.id, qtyInput));
+    qtyInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); qtyInput.blur(); }
+    });
+
+    tbody.appendChild(tr);
+    refreshRowNumbers();
+  }
+
+  function refreshRowNumbers(){
+    const rows = Array.from($("tbody").querySelectorAll("tr"));
+    rows.forEach((r, i) => {
+      const cell = r.querySelector(".rowIndex");
+      if (cell) cell.textContent = String(i + 1);
+    });
+  }
+
+  function handleQtyChange(id, inputEl){
+    const qty = Number(inputEl.value);
+    const idx = items.findIndex(x => x.id === id);
+    if (idx === -1) return;
+
+    if (!(Number.isFinite(qty) && qty >= 1 && Number.isInteger(qty))) {
+      inputEl.value = items[idx].qty;
+      return;
+    }
+
+    if (items[idx].qty === qty) return;
+
+    items[idx].qty = qty;
+    recalcRow(items[idx]);
+    saveItems();
+
+    const row = $("tbody").querySelector(`tr[data-id="${id}"]`);
+    if (row) {
+      const lt = row.querySelector(".lineTotal");
+      if (lt) lt.innerHTML = `<b>${fmt(items[idx].lineTotal)}</b>`;
+    }
+    renderTotalsOnly();
+  }
+
+  function renderTotalsOnly(){
+    let totalQty = 0;
+    let totalArea = 0;
+    for (const it of items){
+      totalQty += it.qty;
+      totalArea += it.lineTotal;
+    }
+    $("totals").innerHTML = `
+      <div class="pill">Items: ${items.length}</div>
+      <div class="pill">Total Qty: ${totalQty}</div>
+      <div class="pill">Total Area: ${fmt(totalArea)} m²</div>
+    `;
+  }
+
+  function deleteItem(id){
+    const idx = items.findIndex(x => x.id === id);
+    if (idx === -1) return;
+
+    items.splice(idx, 1);
+    saveItems();
+
+    const row = $("tbody").querySelector(`tr[data-id="${id}"]`);
+    if (row) row.remove();
+
+    refreshRowNumbers();
+    renderTotalsOnly();
+  }
+
+  function clearList(){
+    items = [];
+    saveItems();
+    $("tbody").innerHTML = "";
+    renderTotalsOnly();
+  }
+
+  function resetInputs(){
+    clearErrors();
+    $("qty").value = 1;
+    $("a_mm").value = "";
+    $("b_mm").value = "";
+    $("length_m").value = "";
+    $("out").innerHTML = `<div class="muted">Enter values and press Enter (adds to list).</div>`;
+    updateUI();
+  }
+
+  // init
+  updateUI();
+  loadItems();
+</script>
+</body>
+</html>
