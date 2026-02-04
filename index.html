@@ -34,6 +34,21 @@
     .small { font-size: 13px; color: #555; }
 
     .qtyCell input { width: 84px; padding: 8px 10px; font-size: 15px; text-align: right; }
+  
+    /* Tabs */
+    .tabs { display:flex; gap:10px; flex-wrap:wrap; margin: 14px 0; }
+    .tab { padding: 10px 14px; border: 1px solid #111; background:#fff; color:#111; border-radius: 999px; cursor:pointer; font-weight: 750; }
+    .tab.active { background:#111; color:#fff; }
+    .tabpanel { display:none; }
+    .tabpanel.active { display:block; }
+
+    /* Stock QTY helper styles */
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .toggleRow { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+    .actions { display:flex; gap:10px; flex-wrap:wrap; margin-top: 12px; }
+    .stockPill { background:#f7f7f7; border-radius: 10px; padding: 12px; margin-top: 12px; }
+    .stockPill .big { margin: 0; }
+
   </style>
 </head>
 <body>
@@ -42,6 +57,14 @@
   Units: dimensions in <b>mm</b>, length in <b>m</b> (Plate uses mm only). Outputs in <b>m²</b>.<br>
   External surface only (good for powder coating). Plate is treated as <b>2 faces only</b>.
 </div>
+
+
+<div class="tabs" role="tablist" aria-label="Calculators">
+  <button class="tab active" type="button" data-tab="tab-area">Surface Area</button>
+  <button class="tab" type="button" data-tab="tab-stock">Stock QTY</button>
+</div>
+
+<section id="tab-area" class="tabpanel active">
 
 <div class="card">
   <div class="grid">
@@ -123,8 +146,149 @@
   </table>
 </div>
 
+
+</section>
+
+<section id="tab-stock" class="tabpanel">
+  <h2 style="margin: 0 0 8px;">Stock Length → Fractional QTY (Internal Costing)</h2>
+  <div class="muted">
+    Cut length is entered in <b>mm</b>. Stock bar length is selected in <b>m</b>.
+    QTY is <b>always rounded up</b> to 2dp so you never under-allocate material cost.
+  </div>
+
+  <div class="card">
+    <div class="grid">
+      <div>
+        <label for="stock_need_mm">Cut length (mm)</label>
+        <input id="stock_need_mm" type="number" inputmode="decimal" min="0" step="1" value="600" />
+        <div class="hint">Example: 1300 = 1.3m</div>
+      </div>
+
+      <div>
+        <label for="stock_bar_m">Stock bar length (m)</label>
+        <select id="stock_bar_m">
+          <option value="4">4 m</option>
+          <option value="6">6 m</option>
+          <option value="6.5">6.5 m</option>
+          <option value="8" selected>8 m</option>
+          <option value="9">9 m</option>
+          <option value="12">12 m</option>
+        </select>
+      </div>
+
+      <div>
+        <label for="stock_pieces">Number of pieces</label>
+        <input id="stock_pieces" type="number" inputmode="numeric" min="1" step="1" value="1" />
+      </div>
+
+      <div>
+        <label>Waste %</label>
+        <div class="toggleRow">
+          <label style="font-weight:650; display:flex; align-items:center; gap:8px; margin:0;">
+            <input id="stock_use_waste" type="checkbox" />
+            Apply waste
+          </label>
+          <input id="stock_waste_pct" type="number" inputmode="decimal" min="0" step="0.1" value="10" style="max-width:120px;" />
+          <span class="muted">%</span>
+        </div>
+        <div class="hint">Waste adds % to the cut length before calculating QTY.</div>
+      </div>
+    </div>
+
+    <div class="stockPill">
+      <div class="big mono">Base QTY: <span id="stock_base_qty">—</span></div>
+      <div class="big mono">Waste QTY: <span id="stock_waste_qty">—</span></div>
+      <div class="small">“Copy QTY” copies Waste QTY when waste is enabled, otherwise Base QTY.</div>
+    </div>
+
+    <div class="actions">
+      <button id="stock_copy_btn" type="button">Copy QTY</button>
+      <button class="secondary" id="stock_reset_btn" type="button">Reset</button>
+    </div>
+  </div>
+</section>
+
 <script>
   const $ = id => document.getElementById(id);
+
+  // ---------- Tabs ----------
+  function initTabs(){
+    const tabs = Array.from(document.querySelectorAll(".tab"));
+    const panels = Array.from(document.querySelectorAll(".tabpanel"));
+    tabs.forEach(btn => {
+      btn.addEventListener("click", () => {
+        tabs.forEach(t => t.classList.remove("active"));
+        panels.forEach(p => p.classList.remove("active"));
+        btn.classList.add("active");
+        const id = btn.getAttribute("data-tab");
+        const panel = document.getElementById(id);
+        if (panel) panel.classList.add("active");
+        if (id === "tab-stock") recalcStockQty();
+      });
+    });
+  }
+
+  // ---------- Stock QTY calculator (always round UP to 2dp) ----------
+  const roundUp2 = n => (Math.ceil(n * 100) / 100).toFixed(2);
+
+  function recalcStockQty(){
+    const needMm = Number($("stock_need_mm").value);
+    const barM = Number($("stock_bar_m").value);
+    const pieces = Math.max(1, Number($("stock_pieces").value || 1));
+    const useWaste = $("stock_use_waste").checked;
+    const wastePct = Math.max(0, Number($("stock_waste_pct").value || 0));
+    const wasteFactor = useWaste ? (1 + wastePct/100) : 1;
+
+    if (!(needMm > 0) || !(barM > 0)){
+      $("stock_base_qty").textContent = "—";
+      $("stock_waste_qty").textContent = "—";
+      return;
+    }
+
+    const cutM = needMm / 1000;
+    const baseQty = (cutM / barM) * pieces;
+    const wasteQty = ((cutM * wasteFactor) / barM) * pieces;
+
+    $("stock_base_qty").textContent = roundUp2(baseQty);
+    $("stock_waste_qty").textContent = roundUp2(wasteQty);
+
+    $("stock_copy_btn").textContent = useWaste ? "Copy Waste QTY" : "Copy Base QTY";
+  }
+
+  function initStockQty(){
+    const ids = ["stock_need_mm","stock_bar_m","stock_pieces","stock_use_waste","stock_waste_pct"];
+    ids.forEach(id => {
+      const el = $(id);
+      if (!el) return;
+      ["input","change"].forEach(evt => el.addEventListener(evt, recalcStockQty));
+    });
+
+    $("stock_copy_btn").addEventListener("click", async () => {
+      const useWaste = $("stock_use_waste").checked;
+      const val = useWaste ? $("stock_waste_qty").textContent : $("stock_base_qty").textContent;
+      if (!val || val === "—") return;
+      try {
+        await navigator.clipboard.writeText(val);
+        const prev = $("stock_copy_btn").textContent;
+        $("stock_copy_btn").textContent = "Copied!";
+        setTimeout(() => { $("stock_copy_btn").textContent = prev; }, 800);
+      } catch {
+        alert("Copy failed. Value: " + val);
+      }
+    });
+
+    $("stock_reset_btn").addEventListener("click", () => {
+      $("stock_need_mm").value = 600;
+      $("stock_bar_m").value = "8";
+      $("stock_pieces").value = 1;
+      $("stock_use_waste").checked = false;
+      $("stock_waste_pct").value = 10;
+      recalcStockQty();
+    });
+
+    recalcStockQty();
+  }
+
 
   // --- AU UB/UC library (designation, depth d, flange width bf, web thickness tw, mass) ---
   // Source: AU sizing chart PDF (see citations in chat). Values in mm (mass in kg/m).
@@ -599,6 +763,8 @@
   // init
   updateUI();
   loadItems();
+  initTabs();
+  initStockQty();
 </script>
 </body>
 </html>
